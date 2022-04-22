@@ -10,7 +10,7 @@ pipeline {
       * if you are using a different OS.
       */
      node {
-        label 'microk8s'
+        label 'localdeploy'
         }
   }
 
@@ -66,7 +66,7 @@ pipeline {
             # Update catalogs
             sudo apt update
             # Make sure our deps are installed
-            sudo apt -y install figlet openjdk-11-jdk make docker.io python3-venv
+            sudo apt -y install figlet openjdk-11-jdk make docker.io python3-venv expect
             # Upgrade everything; we always run with latest patches.
             sudo apt -y upgrade
             # Make sure our kubeconfig dir exists…
@@ -101,7 +101,7 @@ pipeline {
       }
     }
 
-    stage('Microk8s Setup') {
+    stage('Minikube Setup') {
 
         /*
          * This step installs Microk8s. This assumes you have the snap store installed and configured properly. Note that
@@ -112,23 +112,35 @@ pipeline {
 
       steps {
           sh '''
-            sudo snap install microk8s --classic
-            microk8s.enable storage dns helm3
-            microk8s.enable metallb 192.168.100.100/30
+            apt-get install curl wget gnupg2 -y
+            source /etc/os-release
+            sh -c "echo 'deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list"
+            wget -nv https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/xUbuntu_${VERSION_ID}/Release.key -O- | apt-key add -
+            apt-get update -qq -y
+            apt-get -qq --yes install podman
+            curl -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64  && chmod +x minikube
+            mkdir -p /usr/local/bin/
+            install minikube /usr/local/bin/
+            minikube start --vm-driver=podman
             '''
       }
     }
 
-    stage('Configure Microk8s') {
+    stage('Configure Minikube') {
       steps {
 
         /*
-         * This step configures Microk8s for use with kubectl; we just make sure that the jenkins user has access to the
+         * This step configures Minikube for use with kubectl; we just make sure that the jenkins user has access to the
          * configuration.
          */
 
           sh '''
-            microk8s.config > $HOME/.kube/config
+          expect << _EOF_
+          spawn minikube addons configure metallb
+          expect "Enter Load Balancer Start IP:" { send "192.168.100.105\\r" }
+          expect "Enter Load Balancer End IP:" { send "192.168.100.120\\r" }
+          expect eof
+_EOF_
             '''
       }
     }
@@ -240,6 +252,8 @@ pipeline {
             microk8s reset --destroy-storage || true
             # True if it’s not there…
             sudo snap remove microk8s || true
+            # True if it's not there
+            minikube delete || true
             # Clean up the Pulumi stack if it exists for our run - which it shouldn\'t, but you never know.
             find  $WORKSPACE -mindepth 2 -maxdepth 7 -type f -name Pulumi.yaml -execdir $WORKSPACE/pulumi/python/venv/bin/pulumi stack rm marajenk${BUILD_NUMBER}  --force --yes  \\;
             # This is a hack to allow additional commands to be issued following cleanup. This is needed because the VMs

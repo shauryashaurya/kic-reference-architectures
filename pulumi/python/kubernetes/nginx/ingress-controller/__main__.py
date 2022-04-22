@@ -45,6 +45,23 @@ def project_name_from_project_dir(dirname: str):
     return pulumi_config.get_pulumi_project_name(project_path)
 
 
+def find_image_tag(repository: dict) -> typing.Optional[str]:
+    """
+    Inspect the repository dictionary as returned from a stack reference for a valid image_tag_alias or image_tag.
+    If found, return the image_tag_alias or image_tag if found, otherwise return None
+    """
+    if not dict:
+        return None
+
+    if 'image_tag_alias' in repository and repository['image_tag_alias']:
+        return str(repository['image_tag_alias'])
+
+    if 'image_tag' in repository and repository['image_tag']:
+        return str(repository['image_tag'])
+
+    return None
+
+
 def build_chart_values(repository: dict) -> helm.ChartOpts:
     values: Dict[str, Dict[str, typing.Any]] = {
         'controller': {
@@ -88,7 +105,8 @@ def build_chart_values(repository: dict) -> helm.ChartOpts:
                 'annotations': {
                     'co.elastic.logs/module': 'nginx'
                 }
-            }
+            },
+            'nginxplus': False
         },
         'prometheus': {
             'create': True,
@@ -99,14 +117,12 @@ def build_chart_values(repository: dict) -> helm.ChartOpts:
         "opentracing": True
     }
 
-    has_image_tag = 'image_tag' in repository or 'image_tag_alias' in repository
+    image_tag = find_image_tag(repository)
+    if not image_tag:
+        pulumi.log.debug('No image_tag or image_tag_alias found')
 
-    if 'repository_url' in repository and has_image_tag:
+    if 'repository_url' in repository and image_tag:
         repository_url = repository['repository_url']
-        if 'image_tag_alias' in repository:
-            image_tag = repository['image_tag_alias']
-        elif 'image_tag' in repository:
-            image_tag = repository['image_tag']
 
         if 'image' not in values['controller']:
             values['controller']['image'] = {}
@@ -118,9 +134,11 @@ def build_chart_values(repository: dict) -> helm.ChartOpts:
                 'tag': image_tag
             })
 
-            values['controller']['nginxplus'] = image_tag.endswith('plus')
-            if values['controller']['nginxplus']:
+            if config.get_bool('enable_plus'):
+                values['controller']['nginxplus'] = True
                 pulumi.log.info("Enabling NGINX Plus")
+    else:
+        pulumi.log.info(f"Using default ingress controller image as defined in Helm chart")
 
     return values
 
@@ -190,3 +208,4 @@ ingress_service = srv.status
 pulumi.export('lb_ingress_hostname', pulumi.Output.unsecret(ingress_service.load_balancer.ingress[0].hostname))
 # Print out our status
 pulumi.export("kic_status", pstatus)
+pulumi.export('nginx_plus', pulumi.Output.unsecret(chart_values['controller']['nginxplus']))

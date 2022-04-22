@@ -98,131 +98,34 @@ else
   exit 3
 fi
 
-source "${script_dir}/../config/pulumi/environment"
-echo "Configuring all Pulumi projects to use the stack: ${PULUMI_STACK}"
-
-# Create the stack if it does not already exist
-# Do not change the tools directory of add-ons.
-find "${script_dir}/../pulumi" -mindepth 2 -maxdepth 6 -type f -name Pulumi.yaml -not -path "*/tools/*" -execdir pulumi stack select --create "${PULUMI_STACK}" \;
-
-# Show colorful fun headers if the right utils are installed and NO_COLOR is not set
-#
-function header() {
-  if [ -z ${NO_COLOR+x} ]; then
-    "${script_dir}"/../pulumi/python/venv/bin/fart --no_copy -f standard "$1" | "${script_dir}"/../pulumi/python/venv/bin/lolcat
-  else
-    "${script_dir}"/../pulumi/python/venv/bin/fart --no_copy -f standard "$1"
-  fi
-}
-
-function retry() {
-  local -r -i max_attempts="$1"
-  shift
-  local -i attempt_num=1
-  until "$@"; do
-    if ((attempt_num == max_attempts)); then
-      echo "Attempt ${attempt_num} failed and there are no more attempts left!"
-      return 1
-    else
-      echo "Attempt ${attempt_num} failed! Trying again in $attempt_num seconds..."
-      sleep $((attempt_num++))
-    fi
-  done
-}
-
 function createpw() {
   base64 /dev/random | tr -dc '[:alnum:]' | head -c${1:-16}
   return 0
 }
 
-#
-# This deploy only works with the NGINX registries.
-#
-echo " "
-echo "NOTICE! Currently the deployment via kubeconfig only supports pulling images from the registry! A JWT is "
-echo "required in order to access the NGINX Plus repository. This should be placed in a file in the extras directory"
-echo "in the project root, in a file named jwt.token"
-echo " "
-echo "See https://docs.nginx.com/nginx-ingress-controller/installation/using-the-jwt-token-docker-secret/ for more "
-echo "details and examples."
-echo " "
+source "${script_dir}/../config/pulumi/environment"
+echo "Configuring all Pulumi projects to use the stack: ${PULUMI_STACK}"
 
-# Make sure we see it
-sleep 5
+# Create the stack if it does not already exist
+# We skip over the tools directory, because that uses a unique stack for setup of the
+# kubernetes components for installations without them.
+find "${script_dir}/../pulumi/python" -mindepth 1 -maxdepth 7 -type f -name Pulumi.yaml -not -path "*/tools/*" -execdir pulumi stack select --create "${PULUMI_STACK}" \;
 
-#
-# TODO: Integrate this into the mainline along with logic to work with/without #80
-#
-# This logic takes the JWT and transforms it into a secret so we can pull the NGINX Plus IC. If the user is not
-# deploying plus (and does not have a JWT) we create a placeholder credential that is used to create a secert. That
-# secret is not a valid secret, but it is created to make the logic easier to read/code.
-#
-if [[ -s "${script_dir}/../extras/jwt.token" ]]; then
-  JWT=$(cat ${script_dir}/../extras/jwt.token)
-  echo "Loading JWT into nginx-ingress/regcred"
-  ${script_dir}/../pulumi/python/venv/bin/kubectl create secret docker-registry regcred --docker-server=private-registry.nginx.com --docker-username=${JWT} --docker-password=none -n nginx-ingress --dry-run=client -o yaml >${script_dir}/../pulumi/python/kubernetes/nginx/ingress-controller-repo-only/manifests/regcred.yaml
+if [[ -z "${LINODE_TOKEN+x}" ]]; then
+  echo "LINODE_TOKEN not set"
+  if ! grep --quiet '^LINODE_TOKEN=.*' "${script_dir}/../config/pulumi/environment"; then
+    read -r -e -p "Enter the Linode Token to use in all projects (leave blank for default): " LINODE_TOKEN
+    if [[ -z "${LINODE_TOKEN}" ]]; then
+      echo "No Linode Token found - exiting"
+      exit 4
+    fi
+    echo "LINODE_TOKEN=${LINODE_TOKEN}" >>"${script_dir}/../config/pulumi/environment"
+    source "${script_dir}/../config/pulumi/environment"
+    find "${script_dir}/../pulumi/python" -mindepth 1 -maxdepth 7 -type f -name Pulumi.yaml -not -path "*/tools/*" -execdir pulumi config set --plaintext linode:token "${LINODE_TOKEN}" \;
+  fi
 else
-  # TODO: need to adjust so we can deploy from an unauthenticated registry (IC OSS) #81
-  echo "No JWT found; writing placeholder manifest"
-  ${script_dir}/../pulumi/python/venv/bin/kubectl create secret docker-registry regcred --docker-server=private-registry.nginx.com --docker-username=placeholder --docker-password=placeholder -n nginx-ingress --dry-run=client -o yaml >${script_dir}/../pulumi/python/kubernetes/nginx/ingress-controller-repo-only/manifests/regcred.yaml
-fi
-
-# Check for stack info....
-# TODO: Move these to use kubeconfig for the Pulumi main config (which redirects up) instead of aws/vpc #80
-#
-
-# We automatically set this to a kubeconfig type for infra type
-# TODO: combined file should query and manage this #80
-pulumi config set kubernetes:infra_type -C ${script_dir}/../pulumi/python/config kubeconfig
-# Bit of a gotcha; we need to know what infra type we have when deploying our application (BoS) due to the
-# way we determine the load balancer FQDN or IP. We can't read the normal config since Sirius uses it's own
-# configuration because of the encryption needed for the passwords.
-pulumi config set kubernetes:infra_type -C ${script_dir}/../pulumi/python/kubernetes/applications/sirius kubeconfig
-
-# Inform the user of what we are doing
-
-echo " "
-echo "NOTICE! When using a kubeconfig file you need to ensure that your environment is configured to"
-echo "connect to Kubernetes properly. If you have multiple kubernetes contexts (or custom contexts)"
-echo "you may need to remove them and replace them with a simple ~/.kube/config file. This will be "
-echo "addressed in a future release."
-echo " "
-
-# Sleep so that this is seen...
-sleep 5
-
-if pulumi config get kubernetes:kubeconfig -C ${script_dir}/../pulumi/python/config >/dev/null 2>&1; then
-  echo "Kubeconfig file found"
-else
-  echo "Provide an absolute path to your kubeconfig file"
-  pulumi config set kubernetes:kubeconfig -C ${script_dir}/../pulumi/python/config
-fi
-
-# Clustername
-if pulumi config get kubernetes:cluster_name -C ${script_dir}/../pulumi/python/config >/dev/null 2>&1; then
-  echo "Clustername found"
-else
-  echo "Provide your clustername"
-  pulumi config set kubernetes:cluster_name -C ${script_dir}/../pulumi/python/config
-fi
-
-# Connect to the cluster
-if command -v kubectl >/dev/null; then
-  echo "Attempting to connect to kubernetes cluster"
-  retry 30 kubectl version >/dev/null
-fi
-
-# TODO: Figure out better way to handle hostname / ip address for exposing our IC #82
-#
-# This version of the code forces you to add a hostname which is used to generate the cert when the application is
-# deployed, and will output the IP address and the hostname that will need to be set in order to use the self-signed
-# cert and to access the application.
-#
-if pulumi config get kic-helm:fqdn -C ${script_dir}/../pulumi/python/config >/dev/null 2>&1; then
-  echo "Hostname found for deployment"
-else
-  echo "Create a fqdn for your deployment"
-  pulumi config set kic-helm:fqdn -C ${script_dir}/../pulumi/python/config
+  echo "Using LINODE_TOKEN from environment: ${LINODE_TOKEN}"
+  find "${script_dir}/../pulumi/python" -mindepth 1 -maxdepth 7 -type f -name Pulumi.yaml -not -path "*/tools/*" -execdir pulumi config set --plaintext linode:token "${LINODE_TOKEN}" \;
 fi
 
 # The bank of sirius configuration file is stored in the ./sirius/config
@@ -265,19 +168,116 @@ else
   pulumi config set prometheus:adminpass -C ${script_dir}/../pulumi/python/config
 fi
 
+# TODO: Figure out better way to handle hostname / ip address for exposing our IC #82
 #
-# TODO: Allow startup scripts to prompt and accept additional config values #97
-# The default helm timeout for all of the projects is set at the default of 300 seconds (5 minutes)
-# However, since this code path is most commonly going to be used to deploy locally we need to bump
-# that value up. A fix down the road will add this a prompt, but for now we are going to double this
-# value for all helm deploys.
+# This version of the code forces you to add a hostname which is used to generate the cert when the application is
+# deployed, and will output the IP address and the hostname that will need to be set in order to use the self-signed
+# cert and to access the application.
 #
 
-pulumi config set kic-helm:helm_timeout 600 -C ${script_dir}/../pulumi/python/config
-pulumi config set logagent:helm_timeout 600 -C ${script_dir}/../pulumi/python/config
-pulumi config set logstore:helm_timeout 600 -C ${script_dir}/../pulumi/python/config
-pulumi config set certmgr:helm_timeout 600 -C ${script_dir}/../pulumi/python/config
-pulumi config set prometheus:helm_timeout 600 -C ${script_dir}/../pulumi/python/config
+echo " "
+echo "NOTICE! Currently we do not automatically pull the hostname of the K8 LoadBalancer with this deployment; instead"
+echo "you will need to create a FQDN and map the assigned IP address to your FQDN in order to use the deployment. "
+echo "You can then add this mapping to DNS, or locally to your host file"
+echo " "
+echo "See https://networkdynamics.com/2017/05/the-benefits-of-testing-your-website-with-a-local-hosts-file/ for details"
+echo "on how this can be accomplished. "
+echo " "
+echo "This will be streamlined in a future release of MARA."
+echo " "
+
+# So we can see...
+sleep 5
+
+if pulumi config get kic-helm:fqdn -C ${script_dir}/../pulumi/python/config >/dev/null 2>&1; then
+  echo "Hostname found for deployment"
+else
+  echo "Create a fqdn for your deployment"
+  pulumi config set kic-helm:fqdn -C ${script_dir}/../pulumi/python/config
+fi
+
+# Show colorful fun headers if the right utils are installed and NO_COLOR is not set
+#
+function header() {
+  if [ -z ${NO_COLOR+x} ]; then
+    "${script_dir}"/../pulumi/python/venv/bin/fart --no_copy -f standard "$1" | "${script_dir}"/../pulumi/python/venv/bin/lolcat
+  else
+    "${script_dir}"/../pulumi/python/venv/bin/fart --no_copy -f standard "$1"
+  fi
+}
+
+#
+# The initial version of this tried to manage the kubernetes configuration file, but for some reason
+# Linode is a bit touchy about this.
+#
+# So, now we just backup the existing file and slide ours in place. This will be streamlined/addressed as
+# part of the rewrite...
+#
+function add_kube_config() {
+  echo "adding ${cluster_name} cluster to local kubeconfig"
+  mv $HOME/.kube/config $HOME/.kube/config.mara.backup || true
+  pulumi stack output kubeconfig -s "${PULUMI_STACK}" -C ${script_dir}/../pulumi/python/infrastructure/kubeconfig --show-secrets >$HOME/.kube/config
+}
+
+function validate_lke_credentials() {
+  pulumi_lke_token="$(pulumi --cwd "${script_dir}/../pulumi/python/config" config get linode:token)"
+  echo "Validating Linode credentials"
+  if ! linode_cli account view >/dev/null; then
+    echo >&2 "Linode credentials have expired or are not valid"
+    exit 2
+  fi
+}
+
+function retry() {
+  local -r -i max_attempts="$1"
+  shift
+  local -i attempt_num=1
+  until "$@"; do
+    if ((attempt_num == max_attempts)); then
+      echo "Attempt ${attempt_num} failed and there are no more attempts left!"
+      return 1
+    else
+      echo "Attempt ${attempt_num} failed! Trying again in $attempt_num seconds..."
+      sleep $((attempt_num++))
+    fi
+  done
+}
+
+#
+# This deploy only works with the NGINX registries.
+#
+echo " "
+echo "NOTICE! Currently the deployment for Linode LKE only supports pulling images from the registry! A JWT is "
+echo "required in order to access the NGINX Plus repository. This should be placed in a file in the extras directory"
+echo "in the project root, in a file named jwt.token"
+echo " "
+echo "See https://docs.nginx.com/nginx-ingress-controller/installation/using-the-jwt-token-docker-secret/ for more "
+echo "details and examples."
+echo " "
+
+# Make sure we see it
+sleep 5
+
+#
+# TODO: Integrate this into the mainline along with logic to work with/without #80
+#
+# This logic takes the JWT and transforms it into a secret so we can pull the NGINX Plus IC. If the user is not
+# deploying plus (and does not have a JWT) we create a placeholder credential that is used to create a secert. That
+# secret is not a valid secret, but it is created to make the logic easier to read/code.
+#
+if [[ -s "${script_dir}/../extras/jwt.token" ]]; then
+  JWT=$(cat ${script_dir}/../extras/jwt.token)
+  echo "Loading JWT into nginx-ingress/regcred"
+  ${script_dir}/../pulumi/python/venv/bin/kubectl create secret docker-registry regcred --docker-server=private-registry.nginx.com --docker-username=${JWT} --docker-password=none -n nginx-ingress --dry-run=client -o yaml >${script_dir}/../pulumi/python/kubernetes/nginx/ingress-controller-repo-only/manifests/regcred.yaml
+else
+  # TODO: need to adjust so we can deploy from an unauthenticated registry (IC OSS) #81
+  echo "No JWT found; writing placeholder manifest"
+  ${script_dir}/../pulumi/python/venv/bin/kubectl create secret docker-registry regcred --docker-server=private-registry.nginx.com --docker-username=placeholder --docker-password=placeholder -n nginx-ingress --dry-run=client -o yaml >${script_dir}/../pulumi/python/kubernetes/nginx/ingress-controller-repo-only/manifests/regcred.yaml
+fi
+
+if command -v linode_cli >/dev/null; then
+  validate_lke_credentials
+fi
 
 #
 # Set the headers to respect the NO_COLOR variable
@@ -288,11 +288,36 @@ else
   pulumi_args="--color never --stack ${PULUMI_STACK}"
 fi
 
+# We automatically set this to LKE for infra type; since this is a script specific to LKE
+# TODO: combined file should query and manage this
+pulumi config set kubernetes:infra_type -C ${script_dir}/../pulumi/python/config LKE
+# Bit of a gotcha; we need to know what infra type we have when deploying our application (BoS) due to the
+# way we determine the load balancer FQDN or IP. We can't read the normal config since Sirius uses it's own
+# configuration because of the encryption needed for the passwords.
+pulumi config set kubernetes:infra_type -C ${script_dir}/../pulumi/python/kubernetes/applications/sirius LKE
+
+header "Linode LKE"
+cd "${script_dir}/../pulumi/python/infrastructure/linode/lke"
+pulumi $pulumi_args up
+
+#
+# This is used to streamline the pieces that follow. Moving forward we can add new logic behind this and this
+# should abstract away for us. This way we just call the kubeconfig project to get the needed information and
+# let the infrastructure specific parts do their own thing (as long as they work with this module)
+#
 header "Kubeconfig"
 cd "${script_dir}/../pulumi/python/infrastructure/kubeconfig"
 pulumi $pulumi_args up
 
-# TODO: This is using a different project than the AWS deploy; we need to collapse those #80
+# pulumi stack output cluster_name
+cluster_name=$(pulumi stack output cluster_id -s "${PULUMI_STACK}" -C ${script_dir}/../pulumi/python/infrastructure/linode/lke)
+add_kube_config
+
+if command -v kubectl >/dev/null; then
+  echo "Attempting to connect to newly create kubernetes cluster"
+  retry 30 kubectl version >/dev/null
+fi
+
 header "Deploying IC"
 cd "${script_dir}/../pulumi/python/kubernetes/nginx/ingress-controller-repo-only"
 pulumi $pulumi_args up

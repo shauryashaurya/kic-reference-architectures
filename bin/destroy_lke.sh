@@ -59,32 +59,12 @@ fi
 source "${script_dir}/../config/pulumi/environment"
 echo "Configuring all Pulumi projects to use the stack: ${PULUMI_STACK}"
 
-function validate_aws_credentials() {
-  pulumi_aws_profile="$(pulumi --cwd "${script_dir}/../pulumi/python/config" config get aws:profile || true)"
-  if [ "${pulumi_aws_profile}" != "" ]; then
-    profile_arg="--profile ${pulumi_aws_profile}"
-  elif [[ -n "${AWS_PROFILE+x}" ]]; then
-    profile_arg="--profile ${AWS_PROFILE}"
-  else
-    profile_arg=""
-  fi
-
-  echo "Validating AWS credentials"
-  if ! "${script_dir}/../pulumi/python/venv/bin/aws" ${profile_arg} sts get-caller-identity > /dev/null; then
-    echo >&2 "AWS credentials have expired or are not valid"
-    exit 2
-  fi
-}
-
 
 APPLICATIONS=(sirius)
 KUBERNETES=(observability logagent logstore certmgr prometheus)
-NGINX=(kubernetes/nginx/ingress-controller utility/kic-image-build utility/kic-image-push)
-AWSINFRA=(ecr eks vpc)
-
-if command -v aws > /dev/null; then
-  validate_aws_credentials
-fi
+NGINX=(ingress-controller-repo-only)
+LINODE=(lke)
+KUBECONFIG=(kubeconfig)
 
 #
 # This is a temporary process until we complete the directory reorg and move the start/stop
@@ -116,30 +96,43 @@ done
 # TODO: figure out a more elegant way to do the CRD removal for prometheus #83
 # This is a hack for now to remove the CRD's for prometheus-kube-stack
 # See https://github.com/prometheus-community/helm-charts/blob/main/charts/kube-prometheus-stack/README.md#uninstall-chart
-set +o errexit  # don't abort on nonzero exit status for these commands
-kubectl delete crd alertmanagerconfigs.monitoring.coreos.com > /dev/null 2>&1
-kubectl delete crd alertmanagers.monitoring.coreos.com > /dev/null 2>&1
-kubectl delete crd podmonitors.monitoring.coreos.com > /dev/null 2>&1
-kubectl delete crd probes.monitoring.coreos.com > /dev/null 2>&1
-kubectl delete crd prometheuses.monitoring.coreos.com > /dev/null 2>&1
-kubectl delete crd prometheusrules.monitoring.coreos.com > /dev/null 2>&1
-kubectl delete crd servicemonitors.monitoring.coreos.com > /dev/null 2>&1
-kubectl delete crd thanosrulers.monitoring.coreos.com > /dev/null 2>&1
-set -o errexit  # abort on nonzero exit status
+# This was bombing out if K8 was not responding; hence the || true...
+kubectl delete crd alertmanagerconfigs.monitoring.coreos.com > /dev/null 2>&1 || true
+kubectl delete crd alertmanagers.monitoring.coreos.com > /dev/null 2>&1  || true
+kubectl delete crd podmonitors.monitoring.coreos.com   > /dev/null 2>&1 || true
+kubectl delete crd probes.monitoring.coreos.com   > /dev/null 2>&1 || true
+kubectl delete crd prometheuses.monitoring.coreos.com  > /dev/null 2>&1 || true
+kubectl delete crd prometheusrules.monitoring.coreos.com  > /dev/null 2>&1 || true
+kubectl delete crd servicemonitors.monitoring.coreos.com  > /dev/null 2>&1 || true
+kubectl delete crd thanosrulers.monitoring.coreos.com  > /dev/null 2>&1 || true
 
 # Destroy NGINX components
 for project_dir in "${NGINX[@]}" ; do
   echo "$project_dir"
-  if [ -f "${script_dir}/../pulumi/python/${project_dir}/Pulumi.yaml" ]; then
-    pulumi_args="--cwd ${script_dir}/../pulumi/python/${project_dir} --emoji --stack ${PULUMI_STACK}"
+  if [ -f "${script_dir}/../pulumi/python/kubernetes/nginx/${project_dir}/Pulumi.yaml" ]; then
+    pulumi_args="--cwd ${script_dir}/../pulumi/python/kubernetes/nginx/${project_dir} --emoji --stack ${PULUMI_STACK}"
     pulumi ${pulumi_args} destroy
   else
-    >&2 echo "Not destroying - Pulumi.yaml not found in directory: ${script_dir}/../pulumi/python/${project_dir}"
+    >&2 echo "Not destroying - Pulumi.yaml not found in directory: ${script_dir}/../pulumi/python/kubernetes/nginx/${project_dir}"
   fi
 done
 
+#
+# We need to do a cleanup of kubernetes making sure that we get rid of our PV's so they don't hang around
+#
+for NAMESPACE in $(kubectl get namespaces) ; do
+  # Change to a namespace
+  kubectl config set-context --current --namespace=$NAMESPACE
+  # Delete all pods
+  kubectl delete pod --all
+  # Delete all volume claims
+  kubectl delete pvc --all
+  # Delete all persistent volumes
+  kubectl delete pv --all
+done
+
 # Clean up the kubeconfig project
-for project_dir in "kubeconfig" ; do
+for project_dir in "${KUBECONFIG[@]}" ; do
   echo "$project_dir"
   if [ -f "${script_dir}/../pulumi/python/infrastructure/${project_dir}/Pulumi.yaml" ]; then
     pulumi_args="--cwd ${script_dir}/../pulumi/python/infrastructure/${project_dir} --emoji --stack ${PULUMI_STACK}"
@@ -149,14 +142,13 @@ for project_dir in "kubeconfig" ; do
   fi
 done
 
-# Destroy the infrastructure
-for project_dir in "${AWSINFRA[@]}" ; do
+# Clean up the linode project
+for project_dir in "${LINODE[@]}" ; do
   echo "$project_dir"
-  if [ -f "${script_dir}/../pulumi/python/infrastructure/aws/${project_dir}/Pulumi.yaml" ]; then
-    pulumi_args="--cwd ${script_dir}/../pulumi/python/infrastructure/aws/${project_dir} --emoji --stack ${PULUMI_STACK}"
-    echo "Destroying aws/${project_dir}"
+  if [ -f "${script_dir}/../pulumi/python/infrastructure/linode/${project_dir}/Pulumi.yaml" ]; then
+    pulumi_args="--cwd ${script_dir}/../pulumi/python/infrastructure/linode/${project_dir} --emoji --stack ${PULUMI_STACK}"
     pulumi ${pulumi_args} destroy
   else
-    >&2 echo "Not destroying - Pulumi.yaml not found in directory: ${script_dir}/../pulumi/python/infrastructure/aws/${project_dir}"
+    >&2 echo "Not destroying - Pulumi.yaml not found in directory: ${script_dir}/../pulumi/python/infrastructure/linode/${project_dir}"
   fi
 done

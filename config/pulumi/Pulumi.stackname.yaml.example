@@ -61,8 +61,7 @@ config:
   # AWS: Elastic Kubernetes Service (EKS) Settings
   ############################################################################
 
-  # This is the Kubernetes version to install using EKS. Changing this value may result in bugs in the behavior
-  # of the reference architecture because it is designed around the APIs for 1.19.
+  # This is the Kubernetes version to install using EKS.
   eks:k8s_version: 1.19
   # This is the default instance type used by EKS.
   eks:instance_type: t2.large
@@ -91,16 +90,20 @@ config:
   #
 
   # NGINX Kubernetes Ingress Controller (KIC) Configuration
-  kic-helm:chart_name: nginx-ingress
+
   # Chart name for the helm chart for kic
-  kic-helm:chart_version: 0.12.0
+  kic-helm:chart_name: nginx-ingress
   # Chart version for the helm chart for kic
-  kic-helm:helm_repo_name: nginx-stable
+  kic-helm:chart_version: 0.12.0
   # Name of the repo to pull the kic chart from
-  kic-helm:helm_repo_url: https://helm.nginx.com/stable
+  kic-helm:helm_repo_name: nginx-stable
   # URL of the chart repo to pull kic from
-  kic-helm:helm_timeout: 300
+  kic-helm:helm_repo_url: https://helm.nginx.com/stable
   # Timeout value for helm operations in seconds
+  kic-helm:helm_timeout: 300
+  # When set to true, the ingress controller Helm chart will deploy with
+  # NGINX plus support enabled.
+  kic-helm:enable_plus: false
 
   # Acceptable values are default value is (oss_image):
   # source    - build the KIC image from source code
@@ -285,15 +288,28 @@ config:
   #       within that project.
 
   ############################################################################
-  # Digital Ocean K8
+  # Digital Ocean Managed Kubernetes
   ############################################################################
-  # This is the Kubernetes version to install using Digital Ocean K8s. Changing this value may result in bugs in the
-  # behavior of the reference architecture because it is designed around the APIs for 1.19.
-  domk8s:k8s_version: 1.21.9-do.0
+  # This is the Kubernetes version to install using Digital Ocean K8s.
+  domk8s:k8s_version: latest
   # Version of Kubernetes to use
   domk8s:instance_type: s-2vcpu-4gb
   # This is the default instance type used by Digital Ocean K8s.
   domk8s:node_count: 3
   # The desired node count of the Digital Ocean K8s cluster.
   domk8s:region: sfo3
+  # The region to deploy the cluster
+
+
+  ############################################################################
+  # Linode Kubernetes Engine
+  ############################################################################
+  # This is the Kubernetes version to install using Linode K8s.
+  lke:k8s_version: 1.22
+  # Version of Kubernetes to use
+  lke:instance_type: g6-standard-8
+  # This is the default instance type used Linode K8s.
+  lke:node_count: 3
+  # The desired node count of the Linode K8s cluster.
+  lke:region: us-central
   # The region to deploy the cluster
