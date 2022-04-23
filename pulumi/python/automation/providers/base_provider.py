@@ -1,15 +1,18 @@
 import abc
-import io
 import os
 import pathlib
 import sys
 import typing
-from collections import namedtuple
 from typing import List
+from pulumi import automation as auto
+
+from .pulumi_project import PulumiProject
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-PulumiProject = namedtuple('PulumiProject', ['path', 'description'])
+
+class InvalidConfigurationException(Exception):
+    pass
 
 
 class Provider:
@@ -21,19 +24,31 @@ class Provider:
         path = pathlib.Path(SCRIPT_DIR)
         return [os.path.splitext(file.stem)[0] for file in path.iterdir() if is_provider(file)]
 
+    @staticmethod
+    def validate_env_config_required_keys(required_keys: List[str], config: typing.Mapping[str, str]):
+        for key in required_keys:
+            if key not in config.keys():
+                raise InvalidConfigurationException(f'Required configuration key [{key}] not found')
+
+    def extract_pulumi_config_to_apply(self, env_config) -> typing.MutableMapping[str, auto.ConfigValue]:
+        return dict()
+
     @abc.abstractmethod
     def infra_execution_order(self) -> List[PulumiProject]:
         pass
 
+    def validate_env_config(self, config: typing.Mapping[str, str]):
+        Provider.validate_env_config_required_keys(['PULUMI_STACK'], config)
+
     def k8s_execution_order(self) -> List[PulumiProject]:
         return [
-            PulumiProject(path='kubernetes/nginx/ingress-controller', description='Ingress Controller'),
-            PulumiProject(path='kubernetes/logstore', description='Logstore'),
-            PulumiProject(path='kubernetes/logagent', description='Log Agent'),
-            PulumiProject(path='kubernetes/certmgr', description='Cert Manager'),
-            PulumiProject(path='kubernetes/prometheus', description='Prometheus'),
-            PulumiProject(path='kubernetes/observability', description='Observability'),
-            PulumiProject(path='kubernetes/applications/sirius', description='Bank of Sirius')
+            PulumiProject(root_path='kubernetes/nginx/ingress-controller', description='Ingress Controller'),
+            PulumiProject(root_path='kubernetes/logstore', description='Logstore'),
+            PulumiProject(root_path='kubernetes/logagent', description='Log Agent'),
+            PulumiProject(root_path='kubernetes/certmgr', description='Cert Manager'),
+            PulumiProject(root_path='kubernetes/prometheus', description='Prometheus'),
+            PulumiProject(root_path='kubernetes/observability', description='Observability'),
+            PulumiProject(root_path='kubernetes/applications/sirius', description='Bank of Sirius')
         ]
 
     def execution_order(self) -> List[PulumiProject]:

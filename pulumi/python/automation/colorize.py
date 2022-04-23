@@ -36,6 +36,9 @@ else:
 
         def println_color(text: str):
             colorizer.println_plain(text, options)
+            sys.stdout.write('\x1b[0m')
+            sys.stdout.flush()
+
         PRINTLN_FUNC = println_color
     else:
         PRINTLN_FUNC = println_nocolor
