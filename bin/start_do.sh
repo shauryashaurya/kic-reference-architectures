@@ -153,7 +153,7 @@ if pulumi config get sirius:ledger_pwd -C ${script_dir}/../pulumi/python/kuberne
   true
 else
   LEDGER_PW=$(createpw)
-  pulumi config set --secret sirius:accounts_pwd -C ${script_dir}/../pulumi/python/kubernetes/applications/sirius $LEDGER_PW
+  pulumi config set --secret sirius:ledger_pwd -C ${script_dir}/../pulumi/python/kubernetes/applications/sirius $LEDGER_PW
 fi
 
 # Admin password for grafana (see note in __main__.py in prometheus project as to why not encrypted)
@@ -337,13 +337,17 @@ header "Bank of Sirius"
 cd "${script_dir}/../pulumi/python/kubernetes/applications/sirius"
 pulumi $pulumi_args up
 
-header "Finished!!"
+header "Finished!"
+THE_FQDN=$(pulumi config get kic-helm:fqdn -C ${script_dir}/../pulumi/python/config || echo "Cannot Retrieve")
+THE_IP=$(kubectl get service kic-nginx-ingress  --namespace nginx-ingress --output=jsonpath='{.status.loadBalancer.ingress[*].ip}' || echo "Cannot Retrieve")
+
 echo " "
 echo "The startup process has finished successfully"
 echo " "
+echo " "
 echo "Next Steps:"
 echo " "
-echo "1. Map the IP address of your Ingress Controller with your FQDN."
+echo "1. Map the IP address ($THE_IP) of your Ingress Controller with your FQDN ($THE_FQDN)."
 echo "2. Use the ./bin/test-forward.sh program to establish tunnels you can use to connect to the management tools."
 echo "3. Use kubectl, k9s, or the Kubernetes dashboard to explore your deployment."
 echo " "
