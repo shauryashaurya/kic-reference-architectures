@@ -13,12 +13,14 @@ class PulumiConfigException(Exception):
 class PulumiProject:
     root_path: str
     description: str
+    on_success: typing.Optional[typing.Callable] = None
     _config_data: typing.Optional[typing.Mapping[str, str]] = None
 
-    def __init__(self, root_path: str, description: str) -> None:
+    def __init__(self, root_path: str, description: str, on_success: typing.Optional[typing.Callable] = None) -> None:
         super().__init__()
         self.root_path = root_path
         self.description = description
+        self.on_success = on_success
 
     def path(self) -> str:
         relative_path = os.path.sep.join([SCRIPT_DIR, '..', '..', self.root_path])

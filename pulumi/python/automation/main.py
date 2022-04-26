@@ -120,6 +120,7 @@ def refresh(provider: Provider, env_config: env_config_parser.EnvConfigParser):
                                             work_dir=pulumi_project.path())
         print(f'applying config: {provider.extract_pulumi_config_to_apply(env_config)}')
         stack.set_all_config(provider.extract_pulumi_config_to_apply(env_config))
+        provider.validate_stack_config(stack.get_all_config())
         stack.refresh(on_output=print)
 
 def up(provider: Provider, env_config: env_config_parser.EnvConfigParser):
@@ -131,7 +132,11 @@ def up(provider: Provider, env_config: env_config_parser.EnvConfigParser):
                                             work_dir=pulumi_project.path())
         print(f'applying config: {provider.extract_pulumi_config_to_apply(env_config)}')
         stack.set_all_config(provider.extract_pulumi_config_to_apply(env_config))
-        stack.up(on_output=print)
+        provider.validate_stack_config(stack.get_all_config())
+        stackUpResult = stack.up(on_output=print)
+        if pulumi_project.on_success:
+            pulumi_project.on_success(stackUpResult.outputs, stack.get_all_config())
+
 
 if __name__ == "__main__":
     main()
