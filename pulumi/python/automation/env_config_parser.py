@@ -1,5 +1,5 @@
 import os
-import typing
+from typing import Optional, Mapping
 from configparser import ConfigParser
 
 import stack_config_parser
@@ -9,29 +9,27 @@ DEFAULT_PATH = os.path.abspath(os.path.sep.join([SCRIPT_DIR, '..', '..', '..', '
 
 
 class EnvConfigParser(ConfigParser):
-    _config_file_path: typing.Optional[str] = None
-    _stack_config: typing.Optional[stack_config_parser.PulumiStackConfig] = None
+    _stack_config: Optional[stack_config_parser.PulumiStackConfig] = None
+    config_path: Optional[str] = None
 
     def __init__(self) -> None:
         super().__init__()
         self.optionxform = lambda option: option
 
-    def init(self, config_file_path: str = DEFAULT_PATH):
-        self._config_file_path = config_file_path
-        with open(config_file_path, 'r') as f:
-            content = f'[main]{os.linesep}{f.read()}'
-            self.read_string(content)
-
     def stack_name(self) -> str:
         return self.get(section='main', option='PULUMI_STACK')
 
-    def main_section(self) -> typing.Mapping[str, str]:
+    def main_section(self) -> Mapping[str, str]:
         return self['main']
 
-    def stack_config(self) -> stack_config_parser.PulumiStackConfig:
-        if not self._stack_config:
-            config_dir = os.path.dirname(self._config_file_path)
-            stack_config_path = os.path.sep.join([config_dir, f'Pulumi.{self.stack_name()}.yaml'])
-            self._stack_config = stack_config_parser.read(stack_config_path)
 
-        return self._stack_config
+def read(config_file_path: str = DEFAULT_PATH) -> EnvConfigParser:
+    config_parser = EnvConfigParser()
+    config_parser.optionxform = lambda option: option
+
+    with open(config_file_path, 'r') as f:
+        content = f'[main]{os.linesep}{f.read()}'
+        config_parser.read_string(content)
+        config_parser.config_path = config_file_path
+
+    return config_parser

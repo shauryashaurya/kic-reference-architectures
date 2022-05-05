@@ -1,7 +1,8 @@
+import json
 import os
 
 from kic_util import external_process
-from typing import List, Optional, MutableMapping
+from typing import List, Optional, MutableMapping, Union, Hashable, Dict, Any
 
 from pulumi import automation as auto
 
@@ -25,9 +26,9 @@ class AwsCli:
 
     def base_cmd(self) -> str:
         cmd = 'aws '
-        if self.region:
+        if self.region and self.region != '':
             cmd += f'--region {self.region} '
-        if self.profile:
+        if self.profile and self.profile != '':
             cmd += f'--profile {self.profile} '
         return cmd.strip()
 
@@ -46,75 +47,132 @@ class AwsCli:
         """
         return f'{self.base_cmd()} sts get-caller-identity'
 
+    def list_azs_cmd(self) -> str:
+        return f"{self.base_cmd()} ec2 describe-availability-zones --filter " \
+               f"'Name=state,Values=available' --zone-ids"
+
 
 class AwsProvider(Provider):
     def infra_execution_order(self) -> List[PulumiProject]:
         return [
-            PulumiProject(root_path='infrastructure/aws/vpc', description='VPC'),
-            PulumiProject(root_path='infrastructure/aws/eks', description='EKS',
+            PulumiProject(path='infrastructure/aws/vpc', description='VPC'),
+            PulumiProject(path='infrastructure/aws/eks', description='EKS',
                           on_success=AwsProvider._update_kubeconfig),
-            PulumiProject(root_path='infrastructure/aws/ecr', description='ECR')
+            PulumiProject(path='infrastructure/aws/ecr', description='ECR')
         ]
 
-    def validate_stack_config(self, config: MutableMapping[str, auto._config.ConfigValue]):
-        super().validate_stack_config(config)
+    def new_stack_config(self, env_config, defaults: Union[Dict[Hashable, Any], list, None]) -> Union[
+        Dict[Hashable, Any], list, None]:
+        config = {
+            'kubernetes:infra_type': 'AWS'
+        }
+        envcfg = env_config.main_section()
+
+        # AWS region
+        if 'AWS_DEFAULT_REGION' in envcfg:
+            default_region = envcfg['AWS_DEFAULT_REGION']
+        else:
+            default_region = defaults['aws:region']
+
+        aws_region = input(f'AWS region to use [{default_region}]: ').strip() or default_region
+        config['aws:region'] = aws_region
+        print(f"AWS region: {config['aws:region']}")
+
+        # AWS profile
+        if 'AWS_PROFILE' in envcfg:
+            default_profile = envcfg['AWS_PROFILE']
+        else:
+            default_profile = 'none'
+        aws_profile = input(
+            f'AWS profile to use [{default_profile}] (enter "none" for none): ').strip() or default_profile
+        print(f'AWS profile: {aws_profile}')
+
+        if aws_profile != 'none':
+            config['aws:profile'] = aws_profile
+
+        aws_cli = AwsCli(region=aws_region, profile=aws_profile)
+
+        # AWS availability zones
+        az_data, _ = external_process.run(aws_cli.list_azs_cmd())
+        zones = []
+        for zone in json.loads(az_data)['AvailabilityZones']:
+            if zone['ZoneType'] == 'availability-zone':
+                zones.append(zone['ZoneName'])
+
+        def validate_selected_azs(selected: List[str]) -> bool:
+            for az in selected:
+                if az not in zones:
+                    print(f'[{az} is not a known availability zone')
+                    return False
+            return True
+
+        selected_azs = []
+        while len(selected_azs) == 0 or not validate_selected_azs(selected_azs):
+            default_azs = ', '.join(zones)
+            azs = input(
+                f'AWS availability zones to use with VPC [{default_azs} (separate with commas)]: ') or default_azs
+            selected_azs = [x.strip() for x in azs.split(',')]
+
+        config['vpc:azs'] = list(selected_azs)
+        print(f"AWS availability zones: {', '.join(config['vpc:azs'])}")
+
+        # EKS version
+        default_version = defaults['eks:k8s_version'] or '1.22'
+        config['eks:k8s_version'] = input(f'EKS Kubernetes version [{default_version}]: ').strip() or default_version
+        print(f"EKS Kubernetes version: {config['eks:k8s_version']}")
+
+        # EKS instance type
+        default_inst_type = defaults['eks:instance_type'] or 't2.large'
+        config['eks:instance_type'] = input(f'EKS instance type [{default_inst_type}]: ').strip() or default_inst_type
+        print(f"EKS instance type: {config['eks:instance_type']}")
+        
+        # Minimum number of compute instances for cluster
+        default_min_size = defaults['eks:min_size'] or 3
+        while 'eks:min_size' not in config:
+            min_size = input('Minimum number compute instances for EKS cluster '
+                             f'[{default_min_size}]: ').strip() or default_min_size
+            if type(min_size) == int or min_size.isdigit():
+                config['eks:min_size'] = int(min_size)
+        print(f"EKS minimum cluster size: {config['eks:min_size']}")
+        
+        # Maximum number of compute instances for cluster
+        default_max_size = defaults['eks:max_size'] or 12
+        while 'eks:max_size' not in config:
+            max_size = input('Maximum number compute instances for EKS cluster '
+                             f'[{default_max_size}]: ').strip() or default_max_size
+            if type(max_size) == int or max_size.isdigit():
+                config['eks:max_size'] = int(max_size)
+        print(f"EKS maximum cluster size: {config['eks:max_size']}")
+
+        # Desired capacity of compute instances
+        default_desired_capacity = config['eks:min_size']
+        while 'eks:desired_capacity' not in config:
+            desired_capacity = input('Desired number compute instances for EKS cluster '
+                                     f'[{default_desired_capacity}]: ').strip() or default_desired_capacity
+            if type(desired_capacity) == int or desired_capacity.isdigit():
+                config['eks:desired_capacity'] = int(desired_capacity)
+        print(f"EKS maximum cluster size: {config['eks:desired_capacity']}")
+
+        parent_config = super().new_stack_config(env_config, defaults)
+        if 'config' in parent_config:
+            parent_config['config'].update(config)
+        else:
+            parent_config['config'] = config
+
+        return parent_config
+
+    def validate_stack_config(self, stack_config: Union[Dict[Hashable, Any], list, None]):
+        super().validate_stack_config(stack_config)
+        config = stack_config['config']
+
         if 'aws:region' not in config:
             raise InvalidConfigurationException('When using the AWS provider, the region must be specified')
 
-        aws_cli = AwsCli(region=config.get('aws:region').value, profile=config.get('aws:profile').value)
+        aws_cli = AwsCli(region=config['aws:region'], profile=config['aws:profile'])
         try:
             _, err = external_process.run(cmd=aws_cli.validate_aws_credentials_cmd())
         except Exception as e:
             raise AwsProviderException('Unable to authenticate against AWS') from e
-
-    def extract_pulumi_config_to_apply(self, env_config) -> MutableMapping[str, auto.ConfigValue]:
-        configs_to_apply = super().extract_pulumi_config_to_apply(env_config)
-
-        aws_profile = AwsProvider._reconcile_conflicting_config(env_config, 'AWS_PROFILE', 'aws:profile')
-        if aws_profile:
-            configs_to_apply['aws:profile'] = auto.ConfigValue(value=aws_profile, secret=False)
-
-        aws_region = AwsProvider._find_aws_region(env_config)
-        configs_to_apply['aws:region'] = auto.ConfigValue(value=aws_region, secret=False)
-
-        return configs_to_apply
-
-    @staticmethod
-    def _reconcile_conflicting_config(env_config,
-                                      env_config_key: str,
-                                      stack_config_key: str) -> Optional[str]:
-        envcfg = env_config.main_section()
-        stackcfg = env_config.stack_config()
-
-        env_file_has_profile = env_config_key in envcfg
-        stack_config_has_profile = stack_config_key in stackcfg
-
-        if env_file_has_profile and not stack_config_has_profile:
-            return envcfg[env_config_key]
-        if stack_config_has_profile and not env_file_has_profile:
-            return stackcfg[stack_config_key]
-        if not stack_config_has_profile and not env_file_has_profile:
-            return None
-        if stack_config_has_profile and env_file_has_profile:
-            if envcfg[env_config_key] != stackcfg[stack_config_key]:
-                raise InvalidConfigurationException('Conflicting AWS profile settings found between environment '
-                                                    'file configuration and stack configuration file: '
-                                                    f'{env_config_key}={env_config[env_config_key]} '
-                                                    f'{stack_config_key}={stackcfg[stack_config_key]}')
-            else:
-                return envcfg['AWS_PROFILE']
-
-    @staticmethod
-    def _find_aws_region(env_config) -> str:
-        envcfg = env_config.main_section()
-        stackcfg = env_config.stack_config()
-
-        if 'aws:region' in stackcfg:
-            return stackcfg['aws:region']
-        elif 'AWS_DEFAULT_REGION' in envcfg:
-            return envcfg['AWS_DEFAULT_REGION']
-        else:
-            raise InvalidConfigurationException('AWS region was not specified in configuration')
 
     @staticmethod
     def _update_kubeconfig(stack_outputs: MutableMapping[str, auto._output.OutputValue],
@@ -127,5 +185,6 @@ class AwsProvider(Provider):
         cmd = aws_cli.update_kubeconfig_cmd(cluster_name)
         res, err = external_process.run(cmd)
         print(res)
+
 
 INSTANCE = AwsProvider()
